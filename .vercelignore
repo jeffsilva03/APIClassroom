@@ -1,0 +1,12 @@
+.git
+.venv
+.local
+.pytest_cache
+__pycache__
+downloads
+credentials.json
+token*.json
+.env*
+README.md
+tests
+teste_pdf.py
