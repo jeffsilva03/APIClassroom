@@ -62,7 +62,7 @@ class SecurityMiddleware:
             return await self.app(scope, receive, send)
         challenge = f'Bearer resource_metadata="{self.settings.public_url}/.well-known/oauth-protected-resource", scope="{READ_SCOPE}"'
         try:
-            if headers.get(b"origin") and headers[b"origin"].decode() != self.settings.public_url:
+            if b"origin" in headers and headers[b"origin"].decode() not in self.settings.allowed_origins:
                 raise ServiceError("origem_nao_permitida", "Origem não permitida.", 403)
             if int(headers.get(b"content-length", b"0")) > 65536:
                 raise ServiceError("corpo_grande", "Requisição excede 64 KB.", 413)
@@ -80,6 +80,7 @@ class SecurityMiddleware:
             queue.append(now)
         except (ServiceError, ValueError) as exc:
             err = exc if isinstance(exc, ServiceError) else ServiceError("requisicao_invalida", "Requisição inválida.", 400)
+            scope.setdefault("state", {})["mcp_rejection"] = err.code
             extra = {"WWW-Authenticate": challenge} if err.status in (401, 403) else {}
             if err.status == 429:
                 extra["Retry-After"] = "60"

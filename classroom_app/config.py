@@ -2,6 +2,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 BASE = Path(__file__).resolve().parent
 READ_SCOPE = "classroom:read"
@@ -25,8 +26,18 @@ class Settings:
     max_chars: int = 18000
     max_google_calls: int = 60
     request_seconds: int = 55
+    mcp_diagnostics: bool = field(default_factory=lambda: os.getenv("MCP_DIAGNOSTICS", "0") == "1")
     aliases: dict = field(default_factory=lambda: json.loads((BASE / "aliases.json").read_text(encoding="utf-8")))
 
     @property
     def resource(self):
         return self.public_url + "/mcp"
+
+    @property
+    def allowed_hosts(self):
+        return [urlsplit(self.public_url).netloc]
+
+    @property
+    def allowed_origins(self):
+        # Mesma política no middleware OAuth e no transporte MCP; sem curingas.
+        return [self.public_url, "https://chatgpt.com", "https://chat.openai.com"]

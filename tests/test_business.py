@@ -201,17 +201,23 @@ def test_rate_limit_and_origin(settings, google, signed):
         assert client.get("/disciplinas", headers=headers).status_code == 429
 
 
-def test_mcp_wire_initialization_schemas_and_tool(settings, google, signed):
+@pytest.mark.parametrize("origin", [None, "http://testserver", "https://chatgpt.com", "https://chat.openai.com"])
+def test_mcp_wire_initialization_schemas_and_tool(settings, google, signed, origin):
     verifier, make = signed
     google.get.return_value = {"courses": [{"id": "1", "name": "Teste unitário", "courseState": "ACTIVE"}]}
     with TestClient(create_app(settings, google, verifier)) as client:
         headers = {"Authorization": "Bearer " + make(), "Accept": "application/json, text/event-stream"}
+        if origin is not None:
+            headers["Origin"] = origin
         def rpc(method, params):
             r = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, headers=headers)
             assert r.status_code == 200, r.text
             return r.json()["result"]
         initialized = rpc("initialize", {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "tests", "version": "1"}})
         assert initialized["serverInfo"]["name"] == "APIClassroom"
+        headers["MCP-Protocol-Version"] = initialized["protocolVersion"]
+        notification = client.post("/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"}, headers=headers)
+        assert notification.status_code == 202 and not notification.content
         tools = rpc("tools/list", {})["tools"]
         assert len(tools) == 11
         assert all(t["annotations"]["readOnlyHint"] and t["inputSchema"]["type"] == "object" for t in tools)
@@ -220,6 +226,52 @@ def test_mcp_wire_initialization_schemas_and_tool(settings, google, signed):
         failure = rpc("tools/call", {"name": "ler_pdf", "arguments": {"disciplina_id": "1", "arquivo_id": "unrelated"}})
         assert failure["isError"] is True
         assert failure["structuredContent"]["erro"]["codigo"] == "arquivo_nao_vinculado"
+
+
+@pytest.mark.parametrize("origin", ["https://evil.example", "https://chatgpt.com.evil.example", "https://chatgpt.com:444", "null", ""])
+def test_mcp_rejects_untrusted_origins(settings, google, signed, origin):
+    verifier, make = signed
+    with TestClient(create_app(settings, google, verifier)) as client:
+        response = client.post("/mcp", json={}, headers={"Authorization": "Bearer " + make(), "Origin": origin})
+        assert response.status_code == 403
+        assert response.json()["erro"]["codigo"] == "origem_nao_permitida"
+    google.get.assert_not_called()
+
+
+def test_chatgpt_origin_does_not_authorize_or_bypass_host(settings, google, signed):
+    verifier, make = signed
+    with TestClient(create_app(settings, google, verifier)) as client:
+        headers = {"Origin": "https://chatgpt.com", "Accept": "application/json, text/event-stream"}
+        for token, status in [(None, 401), ("invalid", 401), (make(sub="other"), 403), (make(scope=""), 403), (make(exp=1), 401)]:
+            auth = {"Authorization": "Bearer " + token} if token else {}
+            assert client.post("/mcp", json={}, headers=headers | auth).status_code == status
+        headers["Authorization"] = "Bearer " + make()
+        assert client.post("/mcp", json={}, headers=headers | {"Host": "evil.example"}).status_code == 421
+        assert client.post("/mcp", json={}, headers=headers | {"Host": "testserver.evil.example"}).status_code == 421
+        assert client.post("/mcp", content="{}", headers=headers | {"Content-Type": "text/plain"}).status_code == 400
+        assert client.post("/mcp", json={}, headers=headers | {"Accept": "text/plain"}).status_code == 406
+    google.get.assert_not_called()
+
+
+def test_mcp_diagnostics_never_records_sensitive_values(settings, google, signed, monkeypatch):
+    verifier, make = signed
+    settings.mcp_diagnostics = True
+    records = []
+    monkeypatch.setattr("classroom_app.diagnostics.logger.info", records.append)
+    token = make()
+    with TestClient(create_app(settings, google, verifier)) as client:
+        headers = {"Authorization": "Bearer " + token, "Origin": "https://chatgpt.com", "Accept": "application/json, text/event-stream", "Cookie": "private-cookie-sentinel"}
+        client.post("/mcp?private-query-sentinel", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {"private": "private-body-sentinel"}}, headers=headers)
+        client.post("/mcp", json={}, headers=headers | {"Origin": "https://private-origin-sentinel.example"})
+        client.post("/mcp", json={})
+    serialized = "".join(records)
+    for secret in (token, "private-cookie-sentinel", "private-query-sentinel", "private-body-sentinel", "private-origin-sentinel"):
+        assert secret not in serialized
+    rows = [json.loads(r) for r in records]
+    assert all(set(r) == {"method", "route", "status", "duration_ms", "reason"} for r in rows)
+    assert "tools/list:auth_presente:origin_chatgpt" in rows[0]["reason"]
+    assert rows[1]["status"] == 403 and rows[1]["reason"].startswith("origem_nao_permitida:")
+    assert rows[2]["status"] == 401 and "auth_ausente:origin_ausente" in rows[2]["reason"]
 
 
 async def test_google_retries_only_transient_errors(settings, monkeypatch):

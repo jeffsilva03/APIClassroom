@@ -9,6 +9,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from .config import READ_SCOPE, Settings
 from .courses import Courses
 from .documents import Documents
+from .diagnostics import MCPDiagnosticsMiddleware
 from .errors import ServiceError
 from .google import GoogleClient
 from .materials import Materials
@@ -33,7 +34,7 @@ def create_app(settings=None, google=None, verifier=None):
         return {"status": "ok", "classroom": "conectado", "drive": "conectado", "atividades": "autorizadas" if "https://www.googleapis.com/auth/classroom.coursework.me.readonly" in google.scopes() else "capacidade_nao_autorizada", "armazenamento_pdfs": "somente_memoria", "modo": "somente_leitura"}
 
     mcp = build_mcp(courses, materials, documents, diagnostic)
-    mcp_app = mcp.streamable_http_app(stateless_http=True, json_response=True, max_request_body_size=65536, transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=[settings.public_url.split("://", 1)[-1]], allowed_origins=[settings.public_url]))
+    mcp_app = mcp.streamable_http_app(stateless_http=True, json_response=True, max_request_body_size=65536, transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=settings.allowed_hosts, allowed_origins=settings.allowed_origins))
 
     @asynccontextmanager
     async def lifespan(app):
@@ -44,6 +45,8 @@ def create_app(settings=None, google=None, verifier=None):
     app.state.services = (courses, materials, documents)
     app.state.mcp = mcp
     app.add_middleware(SecurityMiddleware, settings=settings, verifier=verifier or TokenVerifier(settings))
+    if settings.mcp_diagnostics:
+        app.add_middleware(MCPDiagnosticsMiddleware)
 
     @app.exception_handler(ServiceError)
     async def service_error(request, exc):
