@@ -50,7 +50,7 @@ async def verify_transport(base, token, origin):
                 schema = next(tool.output_schema for tool in tools.tools if tool.name == "listar_disciplinas")
                 Draft202012Validator(schema).validate(result.structured_content)
     assert seen[:4] == ["initialize", "notifications/initialized", "tools/list", "tools/call"]
-    print("SDK initialize → initialized → 11 ferramentas → chamada:", origin or "sem Origin", "OK")
+    print("SDK initialize > initialized > 11 ferramentas > chamada:", origin or "sem Origin", "OK")
 
 
 async def verify(args):
