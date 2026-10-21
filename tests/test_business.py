@@ -229,7 +229,8 @@ def test_mcp_wire_initialization_schemas_and_tool(settings, google, signed, orig
         notification = client.post("/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"}, headers=headers)
         assert notification.status_code == 202 and not notification.content
         tools = rpc("tools/list", {})["tools"]
-        assert len(tools) == 11
+        assert len(tools) == 14
+        assert {"listar_disciplinas", "buscar_disciplina", "detalhar_disciplina", "listar_materiais", "buscar_materiais", "listar_arquivos", "ler_pdf", "pesquisar_documentos", "listar_avisos", "listar_atividades", "verificar_integracao", "detalhar_atividade", "buscar_atividades", "consultar_entregas"} == {t["name"] for t in tools}
         assert all(t["annotations"]["readOnlyHint"] and t["inputSchema"]["type"] == "object" for t in tools)
         result = rpc("tools/call", {"name": "listar_disciplinas", "arguments": {}})
         assert result["structuredContent"]["disciplinas"][0]["id"] == "1"
@@ -282,6 +283,49 @@ def test_mcp_diagnostics_never_records_sensitive_values(settings, google, signed
     assert "tools/list:auth_presente:origin_chatgpt" in rows[0]["reason"]
     assert rows[1]["status"] == 403 and rows[1]["reason"].startswith("origem_nao_permitida:")
     assert rows[2]["status"] == 401 and "auth_ausente:origin_ausente" in rows[2]["reason"]
+
+
+def test_activity_mcp_calls_with_owner_and_structured_results(settings, google, signed):
+    verifier, make = signed
+    task = {"id": "a", "courseId": "1", "state": "PUBLISHED", "title": "Docker", "description": "Descrição integral", "workType": "SHORT_ANSWER_QUESTION"}
+    async def get(path, params=None, **kwargs):
+        if path == "courses":
+            return {"courses": [{"id": "1", "name": "DevOps", "courseState": "ACTIVE"}]}
+        if path.endswith("studentSubmissions"):
+            assert params["userId"] == "me"
+            return {"studentSubmissions": [{"id": "s", "courseId": "1", "courseWorkId": "a", "state": "TURNED_IN"}]}
+        if path.endswith("courseWork/a"):
+            return task
+        if path.endswith("courseWork"):
+            return {"courseWork": [task]}
+        return {}
+    google.get.side_effect = get
+    with TestClient(create_app(settings, google, verifier)) as client:
+        headers = {"Authorization": "Bearer " + make(), "Origin": "https://chatgpt.com", "Accept": "application/json, text/event-stream"}
+        for name, args, key in [("listar_atividades", {"disciplina_id": "1"}, "itens"), ("detalhar_atividade", {"disciplina_id": "1", "atividade_id": "a"}, "atividade"), ("buscar_atividades", {"consulta": "docker", "prazo": "sem_prazo"}, "resultados"), ("consultar_entregas", {"disciplina_id": "1"}, "entregas")]:
+            response = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": args}}, headers=headers)
+            assert response.status_code == 200
+            result = response.json()["result"]
+            assert not result.get("isError") and result["structuredContent"][key]
+
+
+def test_diagnostic_capability_comes_from_endpoint_not_json(settings, google, signed):
+    verifier, make = signed
+    settings.classroom_credentials = json.dumps({"scopes": ["https://www.googleapis.com/auth/classroom.coursework.me.readonly"]})
+    google.scopes = lambda: []
+    allowed = False
+    async def get(path, params=None, **kwargs):
+        if path == "courses":
+            return {"courses": [{"id": "1"}]}
+        if "courseWork" in path and not allowed:
+            raise ServiceError("escopo_google_insuficiente", "Faltou escopo", 403)
+        return {}
+    google.get.side_effect = get
+    with TestClient(create_app(settings, google, verifier)) as client:
+        headers = {"Authorization": "Bearer " + make()}
+        assert client.get("/integracao", headers=headers).json()["atividades"] == "capacidade_nao_autorizada"
+        allowed = True
+        assert client.get("/integracao", headers=headers).json()["atividades"] == "autorizadas"
 
 
 async def test_google_retries_only_transient_errors(settings, monkeypatch):

@@ -7,3 +7,4 @@ pypdf==6.21.2
 mcp==2.3.0
 pyjwt==2.15.1
 cryptography==50.0.2
+tzdata==2026.5

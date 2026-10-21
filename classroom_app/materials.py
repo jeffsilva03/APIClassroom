@@ -16,15 +16,16 @@ def attachments(item):
 
 
 class Materials:
-    def __init__(self, google, courses):
+    def __init__(self, google, courses, activities=None):
         self.google, self.courses = google, courses
+        self.activities = activities
 
     async def list(self, course_id, size=50, token=None, archived=False, kind="courseWorkMaterials", checked=False):
         identifier(course_id)
         page_params(size, token)
         course = None if checked else await self.courses.detail(course_id, archived)
-        if kind == "courseWork" and "https://www.googleapis.com/auth/classroom.coursework.me.readonly" not in self.google.scopes():
-            raise ServiceError("capacidade_nao_autorizada", "Atividades e prazos exigem classroom.coursework.me.readonly, ainda não autorizado. Materiais e avisos continuam disponíveis.", 403)
+        if kind == "courseWork" and self.activities is not None:
+            return await self.activities.list(course_id, size, token, archived)
         params = {"pageSize": size, "orderBy": "updateTime desc"}
         if token:
             params["pageToken"] = token
@@ -57,10 +58,25 @@ class Materials:
                         return course, a, item
             token = data["proxima_pagina"]
             if not token:
-                raise ServiceError("arquivo_nao_vinculado", "Arquivo não encontrado nos materiais publicados desta turma.", 404)
+                break
             if token in seen:
                 raise ServiceError("paginacao_google", "O Google repetiu um cursor.")
             seen.add(token)
+        if self.activities is not None:
+            token, seen = None, set()
+            while True:
+                data = await self.activities.list(course_id, 50, token, archived, course=course)
+                for item in data["itens"]:
+                    for attachment in item["anexos"]:
+                        if attachment.get("tipo") == "drive" and attachment.get("id") == file_id:
+                            return course, attachment, item
+                token = data["proxima_pagina"]
+                if not token:
+                    break
+                if token in seen:
+                    raise ServiceError("paginacao_google", "O Google repetiu um cursor de atividades.")
+                seen.add(token)
+        raise ServiceError("arquivo_nao_vinculado", "Arquivo não encontrado nos materiais ou atividades publicados desta turma.", 404)
 
     async def search(self, query, course_id=None, course_offset=0, token=None, archived=False):
         if not normalize(query) or len(query) > 180 or course_offset < 0:

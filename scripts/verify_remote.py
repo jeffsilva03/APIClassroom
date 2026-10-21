@@ -11,6 +11,7 @@ from jsonschema import Draft202012Validator
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
+EXPECTED_TOOLS = {"listar_disciplinas", "buscar_disciplina", "detalhar_disciplina", "listar_materiais", "buscar_materiais", "listar_arquivos", "ler_pdf", "pesquisar_documentos", "listar_avisos", "listar_atividades", "verificar_integracao", "detalhar_atividade", "buscar_atividades", "consultar_entregas"}
 
 async def verify_transport(base, token, origin):
     """Reproduz os cabeçalhos do cliente e observa a sequência do SDK oficial."""
@@ -39,8 +40,8 @@ async def verify_transport(base, token, origin):
             async with ClientSession(read, write, read_timeout_seconds=60) as session:
                 init = await session.initialize()
                 tools = await session.list_tools()
-                assert init.server_info.name == "APIClassroom" and len(tools.tools) == 11
-                assert len({tool.name for tool in tools.tools}) == 11
+                assert init.server_info.name == "APIClassroom" and len(tools.tools) == len(EXPECTED_TOOLS)
+                assert {tool.name for tool in tools.tools} == EXPECTED_TOOLS
                 for tool in tools.tools:
                     Draft202012Validator.check_schema(tool.input_schema)
                     if tool.output_schema:
@@ -50,7 +51,7 @@ async def verify_transport(base, token, origin):
                 schema = next(tool.output_schema for tool in tools.tools if tool.name == "listar_disciplinas")
                 Draft202012Validator(schema).validate(result.structured_content)
     assert seen[:4] == ["initialize", "notifications/initialized", "tools/list", "tools/call"]
-    print("SDK initialize > initialized > 11 ferramentas > chamada:", origin or "sem Origin", "OK")
+    print("SDK initialize > initialized >", len(EXPECTED_TOOLS), "ferramentas > chamada:", origin or "sem Origin", "OK")
 
 
 async def verify(args):
@@ -89,7 +90,7 @@ async def verify(args):
                 init = await session.initialize()
                 tools = await session.list_tools()
                 print("MCP inicializado:", init.server_info.name, "ferramentas:", len(tools.tools))
-                assert len(tools.tools) == 11
+                assert {tool.name for tool in tools.tools} == EXPECTED_TOOLS
 
                 async def call(name, arguments):
                     result = await session.call_tool(name, arguments)
@@ -97,6 +98,9 @@ async def verify(args):
                         code = (result.structured_content or {}).get("erro", {}).get("codigo", "erro_mcp")
                         raise AssertionError(name + ": " + code)
                     assert result.structured_content is not None
+                    schema = next(t.output_schema for t in tools.tools if t.name == name)
+                    if schema:
+                        Draft202012Validator(schema).validate(result.structured_content)
                     return result.structured_content
 
                 await call("verificar_integracao", {})
@@ -114,6 +118,34 @@ async def verify(args):
                     denied = await session.call_tool("ler_pdf", {"disciplina_id": args.course_id, "arquivo_id": "unrelated_file"})
                     assert denied.is_error and denied.structured_content["erro"]["codigo"] == "arquivo_nao_vinculado"
                     print("Arquivo arbitrário recusado: OK")
+                    if args.activities:
+                        page, ids, due, iterations = None, set(), 0, 0
+                        while True:
+                            activities = await call("listar_atividades", {"disciplina_id": args.course_id, "pagina": page})
+                            for item in activities["itens"]:
+                                assert item["id"] not in ids and item["estado_publicacao"] == "PUBLISHED"
+                                ids.add(item["id"])
+                                due += bool(item["prazo"]["em_sao_paulo"])
+                            page = activities["proxima_pagina"]
+                            iterations += 1
+                            assert iterations <= 10
+                            if not page:
+                                break
+                        print("Atividades reais:", len(ids), "com prazo convertido:", due)
+                        if ids:
+                            activity_id = sorted(ids)[0]
+                            detail = await call("detalhar_atividade", {"disciplina_id": args.course_id, "atividade_id": activity_id})
+                            assert detail["atividade"]["id"] == activity_id and not detail["atividade"]["descricao_truncada"]
+                        searched = await call("buscar_atividades", {"disciplina_id": args.course_id, "prazo": "com_prazo", "ordenacao": "prazo"})
+                        assert all(i["prazo_data"] is not None for i in searched["resultados"])
+                        own = await call("consultar_entregas", {"disciplina_id": args.course_id, "tamanho": 2})
+                        assert all(i["disciplina_id"] == args.course_id for i in own["entregas"])
+                        print("Detalhe, busca por prazos e entregas próprias: OK")
+                        first = await call("listar_atividades", {"disciplina_id": args.course_id, "tamanho": 1})
+                        if first["proxima_pagina"]:
+                            second = await call("listar_atividades", {"disciplina_id": args.course_id, "tamanho": 1, "pagina": first["proxima_pagina"]})
+                            assert not ({i["id"] for i in first["itens"]} & {i["id"] for i in second["itens"]})
+                            print("Paginação real de atividades sem duplicação: OK")
                 if args.course_id and args.file_id:
                     cursor, pages, chars, iterations = {"pagina_inicio": 1, "offset": 0}, set(), 0, 0
                     while cursor:
@@ -134,4 +166,5 @@ if __name__ == "__main__":
     parser.add_argument("--token-file", type=Path, required=True)
     parser.add_argument("--course-id")
     parser.add_argument("--file-id")
+    parser.add_argument("--activities", action="store_true", help="Valida atividades, detalhe, prazos, paginação e entregas próprias")
     asyncio.run(verify(parser.parse_args()))

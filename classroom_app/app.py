@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from mcp.server.transport_security import TransportSecuritySettings
 
 from .config import READ_SCOPE, Settings
+from .activities import Activities
 from .courses import Courses
 from .documents import Documents
 from .diagnostics import MCPDiagnosticsMiddleware
@@ -25,15 +26,27 @@ def create_app(settings=None, google=None, verifier=None):
     settings = settings or Settings()
     google = google or GoogleClient(settings)
     courses = Courses(google, settings)
-    materials = Materials(google, courses)
+    activities = Activities(google, courses)
+    materials = Materials(google, courses, activities)
     documents = Documents(google, materials, settings)
 
     async def diagnostic():
-        await google.get("courses", {"pageSize": 1, "courseStates": "ACTIVE"})
+        available = await google.get("courses", {"pageSize": 1, "courseStates": "ACTIVE"})
         await google.get("about", {"fields": "user(permissionId)"}, kind="drive")
-        return {"status": "ok", "classroom": "conectado", "drive": "conectado", "atividades": "autorizadas" if "https://www.googleapis.com/auth/classroom.coursework.me.readonly" in google.scopes() else "capacidade_nao_autorizada", "armazenamento_pdfs": "somente_memoria", "modo": "somente_leitura"}
+        capabilities = {}
+        sample = next(iter(available.get("courses", [])), None)
+        for name, suffix, params in (("atividades", "courseWork", {"pageSize": 1, "courseWorkStates": "PUBLISHED"}), ("entregas_proprias", "courseWork/-/studentSubmissions", {"pageSize": 1, "userId": "me"})):
+            if not sample:
+                capabilities[name] = {"status": "sem_disciplina_para_validar"}
+                continue
+            try:
+                await google.get(f"courses/{sample['id']}/{suffix}", params)
+                capabilities[name] = {"status": "autorizadas", "validacao": "endpoint_google_http_200"}
+            except ServiceError as exc:
+                capabilities[name] = {"status": "capacidade_nao_autorizada" if exc.status == 403 else "indisponivel", "motivo": exc.code}
+        return {"status": "ok", "classroom": "conectado", "drive": "conectado", "atividades": capabilities["atividades"]["status"], "capacidades": capabilities, "escopos_concedidos": google.scopes(), "armazenamento_pdfs": "somente_memoria", "modo": "somente_leitura"}
 
-    mcp = build_mcp(courses, materials, documents, diagnostic)
+    mcp = build_mcp(courses, materials, documents, diagnostic, activities)
     mcp_app = mcp.streamable_http_app(stateless_http=True, json_response=True, max_request_body_size=65536, transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=settings.allowed_hosts, allowed_origins=settings.allowed_origins))
 
     @asynccontextmanager
@@ -42,7 +55,7 @@ def create_app(settings=None, google=None, verifier=None):
             yield
 
     app = FastAPI(title="APIClassroom", version="1.0.0", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
-    app.state.services = (courses, materials, documents)
+    app.state.services = (courses, materials, documents, activities)
     app.state.mcp = mcp
     app.add_middleware(SecurityMiddleware, settings=settings, verifier=verifier or TokenVerifier(settings))
     if settings.mcp_diagnostics:
@@ -102,8 +115,20 @@ def create_app(settings=None, google=None, verifier=None):
         return await materials.list(course_id, tamanho, pagina, incluir_arquivadas, kind="announcements")
 
     @app.get("/disciplinas/{course_id}/atividades")
-    async def coursework(course_id: str, tamanho: int = Query(50, ge=1, le=100), pagina: str | None = None, incluir_arquivadas: bool = False):
-        return await materials.list(course_id, tamanho, pagina, incluir_arquivadas, kind="courseWork")
+    async def coursework(course_id: str, tamanho: int = Query(50, ge=1, le=50), pagina: str | None = None, incluir_arquivadas: bool = False, ordenacao: str = "atualizadas"):
+        return await activities.list(course_id, tamanho, pagina, incluir_arquivadas, ordenacao)
+
+    @app.get("/disciplinas/{course_id}/atividades/{activity_id}")
+    async def detail_activity(course_id: str, activity_id: str, incluir_arquivadas: bool = False):
+        return await activities.detail(course_id, activity_id, incluir_arquivadas)
+
+    @app.get("/disciplinas/{course_id}/entregas")
+    async def own_submissions(course_id: str, atividade_id: str | None = None, tamanho: int = Query(50, ge=1, le=50), pagina: str | None = None, incluir_arquivadas: bool = False):
+        return await activities.submissions(course_id, atividade_id, tamanho, pagina, incluir_arquivadas)
+
+    @app.get("/pesquisa/atividades")
+    async def search_activities(consulta: str | None = None, disciplina_id: str | None = None, prazo: str = "todos", data_inicio: str | None = None, data_fim: str | None = None, criadas_desde: str | None = None, ordenacao: str = "atualizadas", tamanho: int = Query(50, ge=1, le=50), continuacao: str | None = None, incluir_arquivadas: bool = False):
+        return await activities.search(consulta, disciplina_id, prazo, data_inicio, data_fim, criadas_desde, ordenacao, tamanho, continuacao, incluir_arquivadas)
 
     @app.get("/pesquisa/materiais")
     async def search_materials(consulta: str, disciplina_id: str | None = None, disciplina_offset: int = Query(0, ge=0), pagina: str | None = None, incluir_arquivadas: bool = False):

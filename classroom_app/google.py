@@ -29,7 +29,18 @@ def spend(limit=60):
         raise ServiceError("limite_consulta", "Consulta atingiu o limite de chamadas ou tempo. Restrinja a disciplina ou continue a paginação.", 429)
 
 
-def google_error(status):
+def google_error(status, payload=None):
+    error = payload.get("error", {}) if isinstance(payload, dict) else {}
+    if not isinstance(error, dict):
+        error = {}
+    reasons = {item.get("reason") for item in error.get("details", []) + error.get("errors", []) if isinstance(item, dict)}
+    if status == 403:
+        if reasons & {"ACCESS_TOKEN_SCOPE_INSUFFICIENT", "insufficientPermissions"}:
+            return ServiceError("escopo_google_insuficiente", "O Google informou escopo insuficiente. Reautorize as capacidades de leitura necessárias.", 403)
+        if reasons & {"ADMIN_POLICY_ENFORCED", "ORG_RESTRICTION_VIOLATION", "adminPolicyEnforced", "domainPolicy"}:
+            return ServiceError("politica_institucional", "O Google informou uma restrição administrativa. Solicite autorização à instituição.", 403)
+        if "SERVICE_DISABLED" in reasons:
+            return ServiceError("api_google_desabilitada", "A API consultada não está habilitada no projeto Google.", 503)
     errors = {
         400: ("parametro_google", "O Google recusou os parâmetros da consulta.", 400),
         401: ("google_reautorizar", "Autorização Google expirada ou revogada. Reautorize a integração.", 503),
@@ -79,7 +90,11 @@ class GoogleClient:
                     await asyncio.sleep(0.3 * 2**attempt)
                     continue
                 if response.status_code != 200:
-                    raise google_error(response.status_code)
+                    try:
+                        payload = response.json()
+                    except ValueError:
+                        payload = None
+                    raise google_error(response.status_code, payload)
                 return response.json()
 
     async def download(self, file_id):
@@ -100,7 +115,7 @@ class GoogleClient:
                 raise ServiceError("rede_google", "Falha de rede ao baixar o PDF. Tente novamente.", 504) from None
 
     def scopes(self):
-        try:
-            return json.loads(self.settings.classroom_credentials).get("scopes", [])
-        except (ValueError, TypeError):
-            return []
+        # Somente a resposta do servidor de autorização comprova a concessão.
+        creds = self.credentials.get("classroom")
+        granted = creds.granted_scopes if creds and creds.valid else None
+        return granted.split() if isinstance(granted, str) else list(granted or [])
