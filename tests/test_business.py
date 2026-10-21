@@ -190,6 +190,16 @@ async def test_tokens(settings, signed, updates, code):
     assert err.value.code == code
 
 
+async def test_owner_uses_exact_auth0_identity_even_when_emails_match(settings, signed):
+    verifier, make = signed
+    settings.owner_sub = "google-oauth2|google-owner"
+    profile = {"email": "owner@example.com", "email_verified": True}
+    with pytest.raises(ServiceError) as error:
+        await verifier.verify(make(sub="auth0|database-owner", **profile))
+    assert error.value.code == "identidade_nao_autorizada"
+    assert (await verifier.verify(make(sub=settings.owner_sub, **profile)))["sub"] == settings.owner_sub
+
+
 def test_rate_limit_and_origin(settings, google, signed):
     verifier, make = signed
     google.get.return_value = {}
