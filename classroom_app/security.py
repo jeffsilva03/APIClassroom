@@ -57,7 +57,7 @@ class SecurityMiddleware:
             return await self.app(scope, receive, send)
         path = scope["path"]
         headers = dict(scope.get("headers", []))
-        public = path in {"/", "/health", "/privacy", "/oauth/google/callback"} or path.startswith("/.well-known/")
+        public = path in {"/", "/health", "/privacy"} or path.startswith("/.well-known/")
         if public:
             return await self.app(scope, receive, send)
         challenge = f'Bearer resource_metadata="{self.settings.public_url}/.well-known/oauth-protected-resource", scope="{READ_SCOPE}"'
@@ -86,6 +86,7 @@ class SecurityMiddleware:
             return await JSONResponse(err.payload(), status_code=err.status, headers={**extra, "Cache-Control": "no-store"})(scope, receive, send)
         budget_token = budget.set({"calls": 0, "started": time.monotonic()})
         consumed = 0
+        started = False
 
         async def bounded_receive():
             nonlocal consumed
@@ -96,12 +97,19 @@ class SecurityMiddleware:
             return message
 
         async def secured_send(message):
+            nonlocal started
             if message["type"] == "http.response.start":
+                started = True
                 message.setdefault("headers", []).extend([(b"cache-control", b"no-store"), (b"x-content-type-options", b"nosniff"), (b"referrer-policy", b"no-referrer")])
             await send(message)
 
         try:
-            async with self.concurrent:
-                await self.app(scope, bounded_receive, secured_send)
+            async with asyncio.timeout(self.settings.request_seconds):
+                async with self.concurrent:
+                    await self.app(scope, bounded_receive, secured_send)
+        except TimeoutError:
+            if not started:
+                error = ServiceError("tempo_excedido", "Consulta excedeu o tempo disponível. Restrinja o intervalo e tente novamente.", 504)
+                await JSONResponse(error.payload(), status_code=504, headers={"Cache-Control": "no-store"})(scope, receive, send)
         finally:
             budget.reset(budget_token)

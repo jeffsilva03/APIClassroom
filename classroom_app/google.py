@@ -13,6 +13,12 @@ from .errors import ServiceError
 budget: ContextVar[dict | None] = ContextVar("google_budget", default=None)
 
 
+class BoundedRequest(Request):
+    def __call__(self, *args, **kwargs):
+        kwargs["timeout"] = 8
+        return super().__call__(*args, **kwargs)
+
+
 def spend(limit=60):
     value = budget.get()
     if value is None:
@@ -51,9 +57,9 @@ class GoogleClient:
                     self.credentials[kind] = Credentials.from_authorized_user_info(json.loads(raw))
                 creds = self.credentials[kind]
                 if not creds.valid:
-                    await asyncio.to_thread(creds.refresh, Request())
+                    await asyncio.wait_for(asyncio.to_thread(creds.refresh, BoundedRequest()), timeout=12)
                 return creds.token
-            except (ValueError, KeyError, GoogleAuthError):
+            except (ValueError, KeyError, GoogleAuthError, TimeoutError):
                 raise ServiceError("google_reautorizar", "Não foi possível renovar a autorização Google. Reautorize a integração.", 503) from None
 
     async def get(self, path, params=None, kind="classroom"):

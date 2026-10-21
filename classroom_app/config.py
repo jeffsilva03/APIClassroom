@@ -20,8 +20,6 @@ class Settings:
     owner_sub: str = field(default_factory=lambda: os.getenv("MCP_OWNER_SUB", ""))
     classroom_credentials: str = field(default_factory=lambda: os.getenv("GOOGLE_CLASSROOM_CREDENTIALS", ""))
     drive_credentials: str = field(default_factory=lambda: os.getenv("GOOGLE_DRIVE_CREDENTIALS", ""))
-    google_web_client: str = field(default_factory=lambda: os.getenv("GOOGLE_WEB_CLIENT", ""))
-    cookie_secret: str = field(default_factory=lambda: os.getenv("OAUTH_STATE_SECRET", ""))
     max_pdf_bytes: int = 20 * 1024 * 1024
     max_pages: int = 5
     max_chars: int = 18000

@@ -8,6 +8,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
+from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
 
 from classroom_app.app import create_app
 from classroom_app.config import Settings
@@ -115,6 +116,34 @@ def test_blank_scanned_and_out_of_range():
     assert all(p["sem_texto_extraivel"] for p in result["paginas"])
     with pytest.raises(ValueError, match="pagina_inexistente"):
         extract(stream.getvalue(), 8, 9, 0)
+
+
+def test_long_page_continuation_does_not_drop_text():
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=600, height=800)
+    font = DictionaryObject({NameObject("/Type"): NameObject("/Font"), NameObject("/Subtype"): NameObject("/Type1"), NameObject("/BaseFont"): NameObject("/Helvetica")})
+    page[NameObject("/Resources")] = DictionaryObject({NameObject("/Font"): DictionaryObject({NameObject("/F1"): writer._add_object(font)})})
+    stream = DecodedStreamObject()
+    stream.set_data(b"BT /F1 10 Tf 10 700 Td (" + b"ABCD" * 6000 + b") Tj ET")
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    output = io.BytesIO()
+    writer.write(output)
+    first = extract(output.getvalue(), 1, 1, 0)
+    assert len(first["paginas"][0]["texto"]) == 18000
+    assert first["continuacao"] == {"pagina_inicio": 1, "offset": 18000}
+    second = extract(output.getvalue(), 1, 1, 18000)
+    assert first["paginas"][0]["texto"] + second["paginas"][0]["texto"] == "ABCD" * 6000
+    assert second["continuacao"] is None
+
+
+async def test_corrupt_pdf_is_sanitized(settings, google):
+    materials = AsyncMock()
+    materials.linked_file.return_value = ({}, {}, {})
+    google.get.return_value = {"mimeType": "application/pdf", "size": "8"}
+    google.download.return_value = b"not a pdf"
+    with pytest.raises(ServiceError) as error:
+        await Documents(google, materials, settings).read("1", "file")
+    assert error.value.code == "pdf_invalido"
 
 
 @pytest.mark.parametrize("status,code", [(401, "google_reautorizar"), (403, "google_sem_permissao"), (404, "nao_encontrado"), (429, "quota_google"), (503, "google_indisponivel")])

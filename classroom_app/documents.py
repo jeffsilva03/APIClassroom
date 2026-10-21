@@ -30,6 +30,7 @@ class Documents:
             try:
                 # O processo recebe somente o PDF por stdin e um ambiente sem segredos.
                 env = {k: v for k, v in os.environ.items() if k.upper() in {"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "LANG"}}
+                env["PYTHONPATH"] = os.pathsep.join(sys.path)
                 worker = await asyncio.to_thread(subprocess.run, [sys.executable, "-m", "classroom_app.pdf_worker", str(start), str(end), str(offset), str(self.settings.max_chars)], input=data, capture_output=True, timeout=15, env=env)
                 result = json.loads(worker.stdout) if worker.returncode == 0 else {"erro": "pdf_limite_processamento"}
             except (subprocess.TimeoutExpired, ValueError):
