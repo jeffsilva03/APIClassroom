@@ -4,6 +4,7 @@ import time
 from unittest.mock import AsyncMock
 
 import jwt
+import httpx
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
@@ -216,3 +217,48 @@ def test_mcp_wire_initialization_schemas_and_tool(settings, google, signed):
         assert all(t["annotations"]["readOnlyHint"] and t["inputSchema"]["type"] == "object" for t in tools)
         result = rpc("tools/call", {"name": "listar_disciplinas", "arguments": {}})
         assert result["structuredContent"]["disciplinas"][0]["id"] == "1"
+        failure = rpc("tools/call", {"name": "ler_pdf", "arguments": {"disciplina_id": "1", "arquivo_id": "unrelated"}})
+        assert failure["isError"] is True
+        assert failure["structuredContent"]["erro"]["codigo"] == "arquivo_nao_vinculado"
+
+
+async def test_google_retries_only_transient_errors(settings, monkeypatch):
+    original = httpx.AsyncClient
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(503 if len(calls) < 3 else 200, json={"courses": []})
+    monkeypatch.setattr("classroom_app.google.httpx.AsyncClient", lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
+    google = GoogleClient(settings)
+    google.token = AsyncMock(return_value="unit-test-token")
+    assert await google.get("courses") == {"courses": []}
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize("mode", ["permission", "network"])
+async def test_google_failures_do_not_appear_as_empty_results(settings, monkeypatch, mode):
+    original = httpx.AsyncClient
+    calls = []
+    def handler(request):
+        calls.append(request)
+        if mode == "network":
+            raise httpx.ConnectError("private-sentinel", request=request)
+        return httpx.Response(403, json={"error": {"message": "private-sentinel"}})
+    monkeypatch.setattr("classroom_app.google.httpx.AsyncClient", lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
+    google = GoogleClient(settings)
+    google.token = AsyncMock(return_value="unit-test-token")
+    with pytest.raises(ServiceError) as error:
+        await google.get("courses")
+    assert len(calls) == (1 if mode == "permission" else 3)
+    assert "private-sentinel" not in json.dumps(error.value.payload())
+
+
+async def test_download_stops_at_byte_limit(settings, monkeypatch):
+    original = httpx.AsyncClient
+    monkeypatch.setattr("classroom_app.google.httpx.AsyncClient", lambda **kw: original(transport=httpx.MockTransport(lambda r: httpx.Response(200, content=b"12345678")), **kw))
+    settings.max_pdf_bytes = 4
+    google = GoogleClient(settings)
+    google.token = AsyncMock(return_value="unit-test-token")
+    with pytest.raises(ServiceError) as error:
+        await google.download("file")
+    assert error.value.code == "pdf_grande"
