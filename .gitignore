@@ -5,7 +5,6 @@ token_drive.json
 .venv/
 __pycache__/
 downloads/
-README.md
 .local/
 .vercel/
 .pytest_cache/

@@ -1,12 +1,12 @@
 {
-  "course_ids": {
-    "course-demo": ["Automação", "Projeto Integrador", "Projeto Integrador/Extensão", "Extensão"]
-  },
+  "course_ids": {},
   "name_patterns": {
     "computacao em nuvem": ["Nuvem"],
     "devops": ["DevOps"],
     "backend": ["Backend"],
     "ciencia de dados": ["Ciência de Dados"],
-    "ffe": ["FFE"]
+    "ffe": ["FFE"],
+    "pint": ["Automação", "Projeto Integrador", "Projeto Integrador/Extensão", "Extensão"],
+    "projeto integrador": ["Automação", "Projeto Integrador", "Projeto Integrador/Extensão", "Extensão"]
   }
 }
