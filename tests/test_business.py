@@ -229,8 +229,8 @@ def test_mcp_wire_initialization_schemas_and_tool(settings, google, signed, orig
         notification = client.post("/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"}, headers=headers)
         assert notification.status_code == 202 and not notification.content
         tools = rpc("tools/list", {})["tools"]
-        assert len(tools) == 14
-        assert {"listar_disciplinas", "buscar_disciplina", "detalhar_disciplina", "listar_materiais", "buscar_materiais", "listar_arquivos", "ler_pdf", "pesquisar_documentos", "listar_avisos", "listar_atividades", "verificar_integracao", "detalhar_atividade", "buscar_atividades", "consultar_entregas"} == {t["name"] for t in tools}
+        assert len(tools) == 17
+        assert {"listar_disciplinas", "buscar_disciplina", "detalhar_disciplina", "listar_materiais", "buscar_materiais", "listar_arquivos", "ler_pdf", "pesquisar_documentos", "listar_avisos", "listar_atividades", "verificar_integracao", "detalhar_atividade", "buscar_atividades", "consultar_entregas", "inspecionar_anexo", "listar_conteudo_zip", "ler_arquivo_zip"} == {t["name"] for t in tools}
         assert all(t["annotations"]["readOnlyHint"] and t["inputSchema"]["type"] == "object" for t in tools)
         result = rpc("tools/call", {"name": "listar_disciplinas", "arguments": {}})
         assert result["structuredContent"]["disciplinas"][0]["id"] == "1"

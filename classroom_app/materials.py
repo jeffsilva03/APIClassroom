@@ -1,3 +1,7 @@
+import base64
+import hashlib
+import json
+
 from .courses import identifier, normalize, page_params
 from .errors import ServiceError
 
@@ -36,47 +40,58 @@ class Materials:
         items = [{"id": i["id"], "disciplina_id": course_id, "titulo": i.get("title"), "descricao": i.get("description", ""), "texto": i.get("text", ""), "criado_em": i.get("creationTime"), "atualizado_em": i.get("updateTime"), "link": i.get("alternateLink"), "anexos": attachments(i), "prazo_data": i.get("dueDate"), "prazo_hora_utc": i.get("dueTime")} for i in data.get(key, [])]
         return {"disciplina": course, "itens": items, "proxima_pagina": data.get("nextPageToken"), "conteudo_nao_confiavel": True}
 
-    async def files(self, course_id, size=50, token=None, archived=False):
-        data = await self.list(course_id, size, token, archived)
-        files = {}
-        for item in data["itens"]:
-            for a in item["anexos"]:
-                if a["tipo"] == "drive":
-                    record = files.setdefault(a["id"], {**a, "materiais_ids": [], "disciplina_id": course_id})
-                    record["materiais_ids"].append(item["id"])
-        return {"disciplina": data["disciplina"], "arquivos": list(files.values()), "proxima_pagina": data["proxima_pagina"], "observacao": "Metadados de anexos; o conteúdo ainda não foi lido. O MIME é confirmado na leitura."}
-
-    async def linked_file(self, course_id, file_id, archived=False):
-        identifier(file_id)
-        course = await self.courses.detail(course_id, archived)
-        token, seen = None, set()
-        while True:
-            data = await self.list(course_id, 100, token, archived, checked=True)
-            for item in data["itens"]:
-                for a in item["anexos"]:
-                    if a.get("tipo") == "drive" and a.get("id") == file_id:
-                        return course, a, item
-            token = data["proxima_pagina"]
-            if not token:
-                break
-            if token in seen:
-                raise ServiceError("paginacao_google", "O Google repetiu um cursor.")
-            seen.add(token)
-        if self.activities is not None:
+    async def publications(self, course_id, archived=False, course=None):
+        course = course or await self.courses.detail(course_id, archived)
+        for kind, origin in (("courseWorkMaterials", "material"), ("courseWork", "atividade"), ("announcements", "aviso")):
             token, seen = None, set()
             while True:
-                data = await self.activities.list(course_id, 50, token, archived, course=course)
+                if kind == "courseWork" and self.activities is not None:
+                    data = await self.activities.list(course_id, 50, token, archived, course=course)
+                else:
+                    data = await self.list(course_id, 50, token, archived, kind=kind, checked=True)
                 for item in data["itens"]:
-                    for attachment in item["anexos"]:
-                        if attachment.get("tipo") == "drive" and attachment.get("id") == file_id:
-                            return course, attachment, item
+                    yield course, {**item, "origem": origin}
                 token = data["proxima_pagina"]
                 if not token:
                     break
                 if token in seen:
-                    raise ServiceError("paginacao_google", "O Google repetiu um cursor de atividades.")
+                    raise ServiceError("paginacao_google", "O Google repetiu um cursor.")
                 seen.add(token)
-        raise ServiceError("arquivo_nao_vinculado", "Arquivo não encontrado nos materiais ou atividades publicados desta turma.", 404)
+
+    async def files(self, course_id, size=50, token=None, archived=False):
+        page_params(size, token)
+        files = {}
+        course = await self.courses.detail(course_id, archived)
+        async for _, item in self.publications(course_id, archived, course):
+            for a in item["anexos"]:
+                if a["tipo"] == "drive":
+                    record = files.setdefault(a["id"], {**a, "arquivo_id": a["id"], "materiais_ids": [], "disciplina_id": course_id, "origens": [], "status_acesso": "nao_verificado", "conteudo_lido": False})
+                    origin = {"origem": item["origem"], "publicacao_id": item["id"], "link_original": item.get("link")}
+                    if origin not in record["origens"]:
+                        record["origens"].append(origin)
+                    if item["origem"] == "material" and item["id"] not in record["materiais_ids"]:
+                        record["materiais_ids"].append(item["id"])
+        rows = sorted(files.values(), key=lambda a: a["id"])
+        fingerprint = hashlib.sha256(json.dumps([course_id, archived, rows], sort_keys=True).encode()).hexdigest()
+        offset = 0
+        if token:
+            try:
+                cursor = json.loads(base64.urlsafe_b64decode(token))
+                offset = cursor["offset"]
+                if cursor["hash"] != fingerprint or type(offset) is not int or not 0 <= offset <= len(rows):
+                    raise ValueError()
+            except (ValueError, KeyError, TypeError):
+                raise ServiceError("paginacao_invalida", "Cursor inválido ou publicações alteradas; reinicie a listagem.", 422) from None
+        more = base64.urlsafe_b64encode(json.dumps({"offset": offset + size, "hash": fingerprint}).encode()).decode() if offset + size < len(rows) else None
+        return {"disciplina": course, "arquivos": rows[offset:offset + size], "proxima_pagina": more, "total_arquivos": len(rows), "observacao": "Anexos de materiais, atividades e avisos, sem duplicações; metadados não comprovam download. A listagem reconsulta as fontes a cada página."}
+
+    async def linked_file(self, course_id, file_id, archived=False):
+        identifier(file_id)
+        async for course, item in self.publications(course_id, archived):
+            for a in item["anexos"]:
+                if a.get("tipo") == "drive" and a.get("id") == file_id:
+                    return course, a, item
+        raise ServiceError("arquivo_nao_vinculado", "Arquivo não encontrado nos materiais, atividades ou avisos publicados desta turma.", 404)
 
     async def search(self, query, course_id=None, course_offset=0, token=None, archived=False):
         if not normalize(query) or len(query) > 180 or course_offset < 0:

@@ -25,6 +25,13 @@ class Settings:
     max_pdf_bytes: int = 20 * 1024 * 1024
     max_pages: int = 5
     max_chars: int = 18000
+    max_zip_bytes: int = field(default_factory=lambda: int(os.getenv("MAX_ZIP_BYTES", 20 * 1024 * 1024)))
+    max_zip_expanded: int = field(default_factory=lambda: int(os.getenv("MAX_ZIP_EXPANDED", 50 * 1024 * 1024)))
+    max_zip_entries: int = field(default_factory=lambda: int(os.getenv("MAX_ZIP_ENTRIES", 2000)))
+    max_zip_file: int = field(default_factory=lambda: int(os.getenv("MAX_ZIP_FILE", 2 * 1024 * 1024)))
+    max_zip_ratio: int = field(default_factory=lambda: int(os.getenv("MAX_ZIP_RATIO", 100)))
+    zip_seconds: int = field(default_factory=lambda: int(os.getenv("ZIP_SECONDS", 10)))
+    zip_chars: int = field(default_factory=lambda: int(os.getenv("ZIP_CHARS", 18000)))
     max_google_calls: int = 60
     request_seconds: int = 55
     mcp_diagnostics: bool = field(default_factory=lambda: os.getenv("MCP_DIAGNOSTICS", "0") == "1")

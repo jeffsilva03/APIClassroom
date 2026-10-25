@@ -11,7 +11,7 @@ from jsonschema import Draft202012Validator
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-EXPECTED_TOOLS = {"listar_disciplinas", "buscar_disciplina", "detalhar_disciplina", "listar_materiais", "buscar_materiais", "listar_arquivos", "ler_pdf", "pesquisar_documentos", "listar_avisos", "listar_atividades", "verificar_integracao", "detalhar_atividade", "buscar_atividades", "consultar_entregas"}
+EXPECTED_TOOLS = {"listar_disciplinas", "buscar_disciplina", "detalhar_disciplina", "listar_materiais", "buscar_materiais", "listar_arquivos", "ler_pdf", "pesquisar_documentos", "listar_avisos", "listar_atividades", "verificar_integracao", "detalhar_atividade", "buscar_atividades", "consultar_entregas", "inspecionar_anexo", "listar_conteudo_zip", "ler_arquivo_zip"}
 
 async def verify_transport(base, token, origin):
     """Reproduz os cabeçalhos do cliente e observa a sequência do SDK oficial."""
@@ -157,6 +157,32 @@ async def verify(args):
                         assert iterations <= 500
                     assert len(pages) == data["total_paginas"] and chars > 0
                     print("PDF real integral:", len(pages), "páginas,", chars, "caracteres,", iterations, "chamadas")
+                if args.course_id and args.zip_file_id:
+                    base_args = {"disciplina_id": args.course_id, "arquivo_id": args.zip_file_id}
+                    inspection = await call("inspecionar_anexo", base_args)
+                    assert inspection["conteudo_lido"] is False
+                    cursor, entries, seen = None, [], set()
+                    while True:
+                        data = await call("listar_conteudo_zip", base_args | {"continuacao": cursor})
+                        entries.extend(data["entradas"])
+                        cursor = data["continuacao"]
+                        if not cursor:
+                            break
+                        assert cursor not in seen and len(seen) < 100
+                        seen.add(cursor)
+                    print("ZIP real:", data["total_arquivos"], "arquivos,", len(entries), "entradas na estrutura")
+                    path = args.zip_path or next((e["caminho"] for e in entries if e["leitura_permitida"] and e["caminho"].endswith("pom.xml")), None)
+                    path = path or next((e["caminho"] for e in entries if e["leitura_permitida"]), None)
+                    assert path, "ZIP sem arquivo textual permitido; escolha outro anexo"
+                    offset, chars = 0, 0
+                    while offset is not None:
+                        result = await call("ler_arquivo_zip", base_args | {"caminho": path, "offset": offset})
+                        assert result["conteudo_lido"] and result["sha256_zip"] == data["sha256_zip"]
+                        chars += result["caracteres_retornados"]
+                        next_offset = result["proximo_offset"]
+                        assert next_offset is None or next_offset > offset
+                        offset = next_offset
+                    print("Texto real no ZIP:", chars, "caracteres lidos; conteúdo omitido do relatório")
     print("Validação remota concluída.")
 
 
@@ -166,5 +192,12 @@ if __name__ == "__main__":
     parser.add_argument("--token-file", type=Path, required=True)
     parser.add_argument("--course-id")
     parser.add_argument("--file-id")
+    parser.add_argument("--zip-file-id", help="ID de ZIP vinculado à turma; exige --course-id")
+    parser.add_argument("--zip-path", help="Caminho textual exato, opcional")
     parser.add_argument("--activities", action="store_true", help="Valida atividades, detalhe, prazos, paginação e entregas próprias")
-    asyncio.run(verify(parser.parse_args()))
+    args = parser.parse_args()
+    if (args.file_id or args.zip_file_id) and not args.course_id:
+        parser.error("--file-id e --zip-file-id exigem --course-id")
+    if args.zip_path and not args.zip_file_id:
+        parser.error("--zip-path exige --zip-file-id")
+    asyncio.run(verify(args))

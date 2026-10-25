@@ -44,7 +44,8 @@ def create_app(settings=None, google=None, verifier=None):
                 capabilities[name] = {"status": "autorizadas", "validacao": "endpoint_google_http_200"}
             except ServiceError as exc:
                 capabilities[name] = {"status": "capacidade_nao_autorizada" if exc.status == 403 else "indisponivel", "motivo": exc.code}
-        return {"status": "ok", "classroom": "conectado", "drive": "conectado", "atividades": capabilities["atividades"]["status"], "capacidades": capabilities, "escopos_concedidos": google.scopes(), "armazenamento_pdfs": "somente_memoria", "modo": "somente_leitura"}
+        identity = await google.identity_status() if isinstance(google, GoogleClient) else "nao_confirmada"
+        return {"status": "ok", "classroom": "conectado", "drive": "conectado", "identidade_google": identity, "atividades": capabilities["atividades"]["status"], "capacidades": capabilities, "escopos_concedidos": google.scopes(), "armazenamento_pdfs": "somente_memoria", "modo": "somente_leitura"}
 
     mcp = build_mcp(courses, materials, documents, diagnostic, activities)
     mcp_app = mcp.streamable_http_app(stateless_http=True, json_response=True, max_request_body_size=65536, transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=settings.allowed_hosts, allowed_origins=settings.allowed_origins))
